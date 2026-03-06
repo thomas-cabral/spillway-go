@@ -394,6 +394,50 @@ func TestCheckQuotaFailsOpen(t *testing.T) {
 	}
 }
 
+func TestCheckQuotaFailClosed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "test-key", WithStdLogger(testLogger()), WithFailClosed(true))
+	err := c.CheckQuota(context.Background(), "user1")
+	if err != ErrQuotaCheckFailed {
+		t.Fatalf("expected ErrQuotaCheckFailed, got %v", err)
+	}
+}
+
+func TestCheckQuotaByRuleFailClosed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "test-key", WithStdLogger(testLogger()), WithFailClosed(true))
+	_, err := c.CheckQuotaByRule(context.Background(), "user1", "some-rule")
+	if err != ErrQuotaCheckFailed {
+		t.Fatalf("expected ErrQuotaCheckFailed, got %v", err)
+	}
+}
+
+func TestFailClosedDefaultOff(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "test-key", WithStdLogger(testLogger()))
+	// CheckQuota should fail open by default
+	if err := c.CheckQuota(context.Background(), "user1"); err != nil {
+		t.Fatalf("expected nil (default fail open), got %v", err)
+	}
+	// CheckQuotaByRule should also fail open by default
+	_, err := c.CheckQuotaByRule(context.Background(), "user1", "rule")
+	if err != nil {
+		t.Fatalf("expected nil (default fail open), got %v", err)
+	}
+}
+
 func TestShutdownDrainsChannel(t *testing.T) {
 	var eventsSent int32
 

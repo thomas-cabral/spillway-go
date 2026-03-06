@@ -12,6 +12,10 @@ import (
 // ErrQuotaExhausted is returned when a user's quota is fully consumed.
 var ErrQuotaExhausted = errors.New("spillway: quota exhausted")
 
+// ErrQuotaCheckFailed is returned in fail-closed mode when a quota check
+// encounters an error (network, server, decode). See WithFailClosed.
+var ErrQuotaCheckFailed = errors.New("spillway: quota check failed")
+
 // Client is a non-blocking spillway usage-tracking client.
 // All public methods are nil-receiver safe.
 type Client struct {
