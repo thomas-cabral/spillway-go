@@ -3,6 +3,7 @@ package spillway
 import (
 	"context"
 	"io"
+	"strings"
 	"time"
 )
 
@@ -62,8 +63,15 @@ func (c *Client) sendEvent(ctx context.Context, evt event) {
 	}
 
 	path := "/v1/events"
+	var query []string
 	if c.opts.useRules {
-		path += "?use_rules=true"
+		query = append(query, "use_rules=true")
+	}
+	if c.opts.withGuarantees {
+		query = append(query, "with_guarantees=true")
+	}
+	if len(query) > 0 {
+		path += "?" + strings.Join(query, "&")
 	}
 
 	resp, err := c.doRequest(ctx, "POST", path, payload)
