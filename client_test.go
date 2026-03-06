@@ -158,6 +158,70 @@ func TestTrackEventWithUseRulesTrue(t *testing.T) {
 	}
 }
 
+func TestTrackEventWithGuarantees(t *testing.T) {
+	var receivedPath string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/customers" && r.Method == http.MethodGet:
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode([]customerResponse{
+				{ID: "cust-uuid-1", ExternalID: "user1"},
+			})
+		case r.URL.Path == "/v1/events" && r.Method == http.MethodPost:
+			receivedPath = r.URL.String()
+			w.WriteHeader(http.StatusAccepted)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "test-key", WithStdLogger(testLogger()), WithUseRules(false), WithGuarantees(true))
+	c.Start()
+	c.TrackEvent("user1", "test.event", 1, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	c.Shutdown(ctx)
+
+	if receivedPath != "/v1/events?with_guarantees=true" {
+		t.Fatalf("expected /v1/events?with_guarantees=true, got %s", receivedPath)
+	}
+}
+
+func TestTrackEventWithBothParams(t *testing.T) {
+	var receivedPath string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/customers" && r.Method == http.MethodGet:
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode([]customerResponse{
+				{ID: "cust-uuid-1", ExternalID: "user1"},
+			})
+		case r.URL.Path == "/v1/events" && r.Method == http.MethodPost:
+			receivedPath = r.URL.String()
+			w.WriteHeader(http.StatusAccepted)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "test-key", WithStdLogger(testLogger()), WithUseRules(true), WithGuarantees(true))
+	c.Start()
+	c.TrackEvent("user1", "test.event", 1, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	c.Shutdown(ctx)
+
+	if receivedPath != "/v1/events?use_rules=true&with_guarantees=true" {
+		t.Fatalf("expected /v1/events?use_rules=true&with_guarantees=true, got %s", receivedPath)
+	}
+}
+
 func TestCheckQuotaAllowed(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -391,6 +455,50 @@ func TestCheckQuotaFailsOpen(t *testing.T) {
 	c := New(srv.URL, "test-key", WithStdLogger(testLogger()))
 	if err := c.CheckQuota(context.Background(), "user1"); err != nil {
 		t.Fatalf("expected nil (fail open), got %v", err)
+	}
+}
+
+func TestCheckQuotaFailClosed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "test-key", WithStdLogger(testLogger()), WithFailClosed(true))
+	err := c.CheckQuota(context.Background(), "user1")
+	if err != ErrQuotaCheckFailed {
+		t.Fatalf("expected ErrQuotaCheckFailed, got %v", err)
+	}
+}
+
+func TestCheckQuotaByRuleFailClosed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "test-key", WithStdLogger(testLogger()), WithFailClosed(true))
+	_, err := c.CheckQuotaByRule(context.Background(), "user1", "some-rule")
+	if err != ErrQuotaCheckFailed {
+		t.Fatalf("expected ErrQuotaCheckFailed, got %v", err)
+	}
+}
+
+func TestFailClosedDefaultOff(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "test-key", WithStdLogger(testLogger()))
+	// CheckQuota should fail open by default
+	if err := c.CheckQuota(context.Background(), "user1"); err != nil {
+		t.Fatalf("expected nil (default fail open), got %v", err)
+	}
+	// CheckQuotaByRule should also fail open by default
+	_, err := c.CheckQuotaByRule(context.Background(), "user1", "rule")
+	if err != nil {
+		t.Fatalf("expected nil (default fail open), got %v", err)
 	}
 }
 

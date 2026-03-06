@@ -22,6 +22,8 @@ type options struct {
 	useRules            bool
 	autoCreateCustomer  bool
 	customerEmailFunc   func(externalID string) string
+	failClosed          bool
+	withGuarantees      bool
 }
 
 func defaults() options {
@@ -71,4 +73,17 @@ func WithAutoCreateCustomer(v bool) Option {
 // auto-created customers. Default: "{id}@spillway.local".
 func WithCustomerEmail(fn func(externalID string) string) Option {
 	return func(o *options) { o.customerEmailFunc = fn }
+}
+
+// WithFailClosed controls whether quota check errors cause requests to be
+// rejected instead of allowed. Default: false (fail open).
+func WithFailClosed(v bool) Option {
+	return func(o *options) { o.failClosed = v }
+}
+
+// WithGuarantees controls whether ?with_guarantees=true is appended to event
+// POSTs, enabling synchronous Kafka delivery on the server. When useRules is
+// true, guaranteed delivery is implied. Default: false.
+func WithGuarantees(v bool) Option {
+	return func(o *options) { o.withGuarantees = v }
 }
