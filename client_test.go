@@ -94,6 +94,57 @@ func TestTrackEventAndSendLoop(t *testing.T) {
 	}
 }
 
+// TestTrackEventSendsIDAndTimestamp verifies the SDK sends a non-empty event_id
+// and a parseable event timestamp (bound at TrackEvent), so the billing store can
+// dedup resends by a stable (event_id, timestamp).
+func TestTrackEventSendsIDAndTimestamp(t *testing.T) {
+	gotPayload := make(chan map[string]interface{}, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/customers" && r.Method == http.MethodGet:
+			json.NewEncoder(w).Encode([]customerResponse{{ID: "cust-uuid-1", ExternalID: "user1"}})
+		case r.URL.Path == "/v1/events" && r.Method == http.MethodPost:
+			var p map[string]interface{}
+			json.NewDecoder(r.Body).Decode(&p)
+			gotPayload <- p
+			w.WriteHeader(http.StatusAccepted)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	before := time.Now().Add(-time.Second)
+	c := New(srv.URL, "test-key", WithStdLogger(testLogger()))
+	c.Start()
+	c.TrackEvent("user1", "issue.created", 1, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	c.Shutdown(ctx)
+
+	select {
+	case p := <-gotPayload:
+		id, _ := p["event_id"].(string)
+		if id == "" {
+			t.Fatalf("expected non-empty event_id, got payload %v", p)
+		}
+		tsStr, _ := p["timestamp"].(string)
+		if tsStr == "" {
+			t.Fatalf("expected timestamp in payload, got %v", p)
+		}
+		ts, err := time.Parse(time.RFC3339Nano, tsStr)
+		if err != nil {
+			t.Fatalf("timestamp %q not RFC3339: %v", tsStr, err)
+		}
+		if ts.Before(before) || ts.After(time.Now().Add(time.Second)) {
+			t.Fatalf("timestamp %s not ~now", ts)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no event received")
+	}
+}
+
 func TestTrackEventWithUseRulesFalse(t *testing.T) {
 	var receivedPath string
 

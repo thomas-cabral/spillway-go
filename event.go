@@ -11,23 +11,31 @@ import (
 
 // event represents a usage event to be sent to spillway.
 type event struct {
-	UserID   string                 // resolved to spillway customer UUID in sendLoop
-	Name     string
-	Value    float64
-	Metadata map[string]interface{}
+	ID        string // idempotency key, bound at TrackEvent (stable across resends)
+	UserID    string // resolved to spillway customer UUID in sendLoop
+	Name      string
+	Value     float64
+	Timestamp time.Time // the event's occurrence time, bound at TrackEvent
+	Metadata  map[string]interface{}
 }
 
 // TrackEvent enqueues a usage event for async delivery. Non-blocking; drops
 // the event with a warning if the channel is full.
+//
+// The event_id and timestamp are bound HERE (at occurrence time), not at send
+// time, so any retry of the same logical event carries an identical
+// (event_id, timestamp) — letting the billing store dedup it exactly.
 func (c *Client) TrackEvent(userID, eventName string, value float64, metadata map[string]interface{}) {
 	if c == nil {
 		return
 	}
 	evt := event{
-		UserID:   userID,
-		Name:     eventName,
-		Value:    value,
-		Metadata: metadata,
+		ID:        uuid.New().String(),
+		UserID:    userID,
+		Name:      eventName,
+		Value:     value,
+		Timestamp: time.Now().UTC(),
+		Metadata:  metadata,
 	}
 	select {
 	case c.eventCh <- evt:
@@ -56,10 +64,11 @@ func (c *Client) sendEvent(ctx context.Context, evt event) {
 	}
 
 	payload := map[string]interface{}{
-		"event_id":    uuid.New().String(),
+		"event_id":    evt.ID,
 		"customer_id": customerID,
 		"event_name":  evt.Name,
 		"value":       evt.Value,
+		"timestamp":   evt.Timestamp.Format(time.RFC3339Nano),
 	}
 	if evt.Metadata != nil {
 		payload["metadata"] = evt.Metadata
