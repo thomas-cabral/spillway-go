@@ -12,9 +12,9 @@ import (
 type UserIDFunc func(r *http.Request) string
 
 // RequireQuota returns net/http middleware that checks the user's remaining
-// quota for the given rule name before allowing the request to proceed.
-// Returns 429 with usage details when quota is exhausted. Fails open on all errors.
-func RequireQuota(client *spillway.Client, ruleName string, userID UserIDFunc) func(http.Handler) http.Handler {
+// quota for the named quota before allowing the request to proceed.
+// Returns 429 with quota details when the quota is exhausted. Fails open on all errors.
+func RequireQuota(client *spillway.Client, quotaName string, userID UserIDFunc) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			uid := userID(r)
@@ -23,17 +23,18 @@ func RequireQuota(client *spillway.Client, ruleName string, userID UserIDFunc) f
 				return
 			}
 
-			usage, err := client.CheckQuotaByRule(r.Context(), uid, ruleName)
-			if errors.Is(err, spillway.ErrQuotaExhausted) && usage != nil {
+			status, err := client.CheckQuotaByName(r.Context(), uid, quotaName)
+			if errors.Is(err, spillway.ErrQuotaExhausted) && status != nil {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusTooManyRequests)
 				json.NewEncoder(w).Encode(map[string]interface{}{
-					"error":         "quota exhausted",
-					"rule_name":     usage.RuleName,
-					"current_usage": usage.CurrentUsage,
-					"limit":         usage.Limit,
-					"remaining":     usage.Remaining,
-					"reset_period":  usage.ResetPeriod,
+					"error":        "quota exhausted",
+					"quota_name":   status.QuotaName,
+					"meter_name":   status.MeterName,
+					"usage":        status.Usage,
+					"limit":        status.Limit,
+					"remaining":    status.Remaining,
+					"reset_period": status.ResetPeriod,
 				})
 				return
 			}

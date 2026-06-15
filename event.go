@@ -97,6 +97,11 @@ func (c *Client) sendEvent(ctx context.Context, evt event) {
 		c.logger.Printf("[spillway] sendEvent: duplicate event_id for %s (already processed)", evt.Name)
 		return
 	}
+	if resp.StatusCode == 429 {
+		body, _ := io.ReadAll(resp.Body)
+		c.logger.Printf("[spillway] sendEvent: quota exhausted for %s: %s", evt.Name, string(body))
+		return
+	}
 	if resp.StatusCode != 202 && resp.StatusCode != 200 && resp.StatusCode != 201 {
 		body, _ := io.ReadAll(resp.Body)
 		c.logger.Printf("[spillway] sendEvent: unexpected status %d for %s: %s", resp.StatusCode, evt.Name, string(body))

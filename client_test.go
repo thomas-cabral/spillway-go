@@ -24,9 +24,9 @@ func TestNilClientNoOps(t *testing.T) {
 	if err := c.CheckQuota(context.Background(), "user1"); err != nil {
 		t.Fatalf("expected nil, got %v", err)
 	}
-	usage, err := c.CheckQuotaByRule(context.Background(), "user1", "rule")
-	if err != nil || usage != nil {
-		t.Fatalf("expected nil/nil, got %v/%v", usage, err)
+	status, err := c.CheckQuotaByName(context.Background(), "user1", "quota")
+	if err != nil || status != nil {
+		t.Fatalf("expected nil/nil, got %v/%v", status, err)
 	}
 	c.Shutdown(context.Background())
 }
@@ -281,10 +281,10 @@ func TestCheckQuotaAllowed(t *testing.T) {
 			json.NewEncoder(w).Encode([]customerResponse{
 				{ID: "cust-uuid-1", ExternalID: "user1"},
 			})
-		case r.URL.Path == "/v1/quota-rules/usage/cust-uuid-1":
+		case r.URL.Path == "/v1/customers/cust-uuid-1/quota-status":
 			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode([]QuotaRuleUsage{
-				{Remaining: 499000},
+			json.NewEncoder(w).Encode([]QuotaStatus{
+				{Remaining: 499000, OverageBehavior: "HARD_CUTOFF"},
 			})
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -306,10 +306,10 @@ func TestCheckQuotaExhausted(t *testing.T) {
 			json.NewEncoder(w).Encode([]customerResponse{
 				{ID: "cust-uuid-1", ExternalID: "user1"},
 			})
-		case r.URL.Path == "/v1/quota-rules/usage/cust-uuid-1":
+		case r.URL.Path == "/v1/customers/cust-uuid-1/quota-status":
 			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode([]QuotaRuleUsage{
-				{Remaining: 0},
+			json.NewEncoder(w).Encode([]QuotaStatus{
+				{Remaining: 0, OverageBehavior: "HARD_CUTOFF"},
 			})
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -324,7 +324,9 @@ func TestCheckQuotaExhausted(t *testing.T) {
 	}
 }
 
-func TestCheckQuotaByRuleAllowed(t *testing.T) {
+// TestCheckQuotaOverageBillingAllowed verifies a fully-consumed quota does NOT
+// block when its overage behavior is OVERAGE_BILLING — the server bills overage.
+func TestCheckQuotaOverageBillingAllowed(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/v1/customers" && r.Method == http.MethodGet:
@@ -332,11 +334,10 @@ func TestCheckQuotaByRuleAllowed(t *testing.T) {
 			json.NewEncoder(w).Encode([]customerResponse{
 				{ID: "cust-uuid-1", ExternalID: "user1"},
 			})
-		case r.URL.Path == "/v1/quota-rules/usage/cust-uuid-1":
+		case r.URL.Path == "/v1/customers/cust-uuid-1/quota-status":
 			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode([]QuotaRuleUsage{
-				{RuleName: "Ticket Operations", Remaining: 100, Limit: 500, CurrentUsage: 400},
-				{RuleName: "Document Operations", Remaining: 50, Limit: 100, CurrentUsage: 50},
+			json.NewEncoder(w).Encode([]QuotaStatus{
+				{Remaining: -50, OverageBehavior: "OVERAGE_BILLING"},
 			})
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -345,19 +346,45 @@ func TestCheckQuotaByRuleAllowed(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL, "test-key", WithStdLogger(testLogger()))
-	usage, err := c.CheckQuotaByRule(context.Background(), "user1", "Ticket Operations")
+	if err := c.CheckQuota(context.Background(), "user1"); err != nil {
+		t.Fatalf("expected nil (overage billing allowed), got %v", err)
+	}
+}
+
+func TestCheckQuotaByNameAllowed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/v1/customers" && r.Method == http.MethodGet:
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode([]customerResponse{
+				{ID: "cust-uuid-1", ExternalID: "user1"},
+			})
+		case r.URL.Path == "/v1/customers/cust-uuid-1/quota-status":
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode([]QuotaStatus{
+				{QuotaName: "Ticket Operations", Remaining: 100, Limit: 500, Usage: 400, OverageBehavior: "HARD_CUTOFF"},
+				{QuotaName: "Document Operations", Remaining: 50, Limit: 100, Usage: 50, OverageBehavior: "HARD_CUTOFF"},
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	c := New(srv.URL, "test-key", WithStdLogger(testLogger()))
+	status, err := c.CheckQuotaByName(context.Background(), "user1", "Ticket Operations")
 	if err != nil {
 		t.Fatalf("expected nil error, got %v", err)
 	}
-	if usage == nil {
-		t.Fatal("expected non-nil usage")
+	if status == nil {
+		t.Fatal("expected non-nil status")
 	}
-	if usage.Remaining != 100 {
-		t.Fatalf("expected remaining=100, got %f", usage.Remaining)
+	if status.Remaining != 100 {
+		t.Fatalf("expected remaining=100, got %f", status.Remaining)
 	}
 }
 
-func TestCheckQuotaByRuleExhausted(t *testing.T) {
+func TestCheckQuotaByNameExhausted(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/v1/customers" && r.Method == http.MethodGet:
@@ -365,10 +392,10 @@ func TestCheckQuotaByRuleExhausted(t *testing.T) {
 			json.NewEncoder(w).Encode([]customerResponse{
 				{ID: "cust-uuid-1", ExternalID: "user1"},
 			})
-		case r.URL.Path == "/v1/quota-rules/usage/cust-uuid-1":
+		case r.URL.Path == "/v1/customers/cust-uuid-1/quota-status":
 			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode([]QuotaRuleUsage{
-				{RuleName: "Ticket Operations", Remaining: 0, Limit: 500, CurrentUsage: 500},
+			json.NewEncoder(w).Encode([]QuotaStatus{
+				{QuotaName: "Ticket Operations", Remaining: 0, Limit: 500, Usage: 500, OverageBehavior: "HARD_CUTOFF"},
 			})
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -377,16 +404,16 @@ func TestCheckQuotaByRuleExhausted(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL, "test-key", WithStdLogger(testLogger()))
-	usage, err := c.CheckQuotaByRule(context.Background(), "user1", "Ticket Operations")
+	status, err := c.CheckQuotaByName(context.Background(), "user1", "Ticket Operations")
 	if err != ErrQuotaExhausted {
 		t.Fatalf("expected ErrQuotaExhausted, got %v", err)
 	}
-	if usage == nil || usage.RuleName != "Ticket Operations" {
-		t.Fatal("expected usage with rule name")
+	if status == nil || status.QuotaName != "Ticket Operations" {
+		t.Fatal("expected status with quota name")
 	}
 }
 
-func TestCheckQuotaByRuleNotFound(t *testing.T) {
+func TestCheckQuotaByNameNotFound(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/v1/customers" && r.Method == http.MethodGet:
@@ -394,10 +421,10 @@ func TestCheckQuotaByRuleNotFound(t *testing.T) {
 			json.NewEncoder(w).Encode([]customerResponse{
 				{ID: "cust-uuid-1", ExternalID: "user1"},
 			})
-		case r.URL.Path == "/v1/quota-rules/usage/cust-uuid-1":
+		case r.URL.Path == "/v1/customers/cust-uuid-1/quota-status":
 			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode([]QuotaRuleUsage{
-				{RuleName: "Other Rule", Remaining: 100},
+			json.NewEncoder(w).Encode([]QuotaStatus{
+				{QuotaName: "Other Quota", Remaining: 100, OverageBehavior: "HARD_CUTOFF"},
 			})
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -406,12 +433,12 @@ func TestCheckQuotaByRuleNotFound(t *testing.T) {
 	defer srv.Close()
 
 	c := New(srv.URL, "test-key", WithStdLogger(testLogger()))
-	usage, err := c.CheckQuotaByRule(context.Background(), "user1", "Nonexistent")
+	status, err := c.CheckQuotaByName(context.Background(), "user1", "Nonexistent")
 	if err != nil {
 		t.Fatalf("expected nil error (fail open), got %v", err)
 	}
-	if usage != nil {
-		t.Fatalf("expected nil usage, got %v", usage)
+	if status != nil {
+		t.Fatalf("expected nil status, got %v", status)
 	}
 }
 
@@ -435,10 +462,10 @@ func TestCustomerAutoCreation(t *testing.T) {
 			atomic.AddInt32(&customerCreated, 1)
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(customerResponse{ID: "new-cust-uuid", ExternalID: "new-user"})
-		case r.URL.Path == "/v1/quota-rules/usage/new-cust-uuid":
+		case r.URL.Path == "/v1/customers/new-cust-uuid/quota-status":
 			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode([]QuotaRuleUsage{
-				{Remaining: 500000},
+			json.NewEncoder(w).Encode([]QuotaStatus{
+				{Remaining: 500000, OverageBehavior: "HARD_CUTOFF"},
 			})
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -477,9 +504,9 @@ func TestCustomerEmailOption(t *testing.T) {
 			receivedEmail = req["email"]
 			w.WriteHeader(http.StatusCreated)
 			json.NewEncoder(w).Encode(customerResponse{ID: "cust-1", ExternalID: "user1"})
-		case r.URL.Path == "/v1/quota-rules/usage/cust-1":
+		case r.URL.Path == "/v1/customers/cust-1/quota-status":
 			w.WriteHeader(http.StatusOK)
-			json.NewEncoder(w).Encode([]QuotaRuleUsage{{Remaining: 100}})
+			json.NewEncoder(w).Encode([]QuotaStatus{{Remaining: 100, OverageBehavior: "HARD_CUTOFF"}})
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -522,14 +549,14 @@ func TestCheckQuotaFailClosed(t *testing.T) {
 	}
 }
 
-func TestCheckQuotaByRuleFailClosed(t *testing.T) {
+func TestCheckQuotaByNameFailClosed(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
 
 	c := New(srv.URL, "test-key", WithStdLogger(testLogger()), WithFailClosed(true))
-	_, err := c.CheckQuotaByRule(context.Background(), "user1", "some-rule")
+	_, err := c.CheckQuotaByName(context.Background(), "user1", "some-quota")
 	if err != ErrQuotaCheckFailed {
 		t.Fatalf("expected ErrQuotaCheckFailed, got %v", err)
 	}
@@ -546,8 +573,8 @@ func TestFailClosedDefaultOff(t *testing.T) {
 	if err := c.CheckQuota(context.Background(), "user1"); err != nil {
 		t.Fatalf("expected nil (default fail open), got %v", err)
 	}
-	// CheckQuotaByRule should also fail open by default
-	_, err := c.CheckQuotaByRule(context.Background(), "user1", "rule")
+	// CheckQuotaByName should also fail open by default
+	_, err := c.CheckQuotaByName(context.Background(), "user1", "quota")
 	if err != nil {
 		t.Fatalf("expected nil (default fail open), got %v", err)
 	}
